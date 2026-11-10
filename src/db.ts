@@ -1,6 +1,14 @@
 import type { D1Database } from '@cloudflare/workers-types';
 
-export type PromptType = 'truth' | 'dare';
+export type PromptType = 'truth' | 'dare' | 'wyr';
+
+export interface PromptRecord {
+  id: number;
+  guildId: string | null;
+  type: PromptType;
+  rating: 'pg' | 'pg13';
+  text: string;
+}
 
 export interface DealtPrompt {
   id: string;
@@ -22,8 +30,17 @@ export interface LeaderboardEntry {
   userId: string;
   truthsAnswered: number;
   daresAnswered: number;
+  wyrAnswered: number;
   totalAnswered: number;
   updatedAt: number;
+}
+
+interface PromptRow {
+  id: number;
+  guild_id: string | null;
+  type: string;
+  rating: string;
+  text: string;
 }
 
 interface DealtRow {
@@ -46,8 +63,19 @@ interface LeaderboardRow {
   user_id: string;
   truths_answered: number;
   dares_answered: number;
+  wyr_answered: number;
   updated_at: number;
   total_answered?: number;
+}
+
+function toPromptRecord(row: PromptRow): PromptRecord {
+  return {
+    id: Number(row.id),
+    guildId: row.guild_id,
+    type: row.type as PromptType,
+    rating: row.rating as 'pg' | 'pg13',
+    text: row.text,
+  };
 }
 
 function toDealtPrompt(row: DealtRow): DealtPrompt {
@@ -70,22 +98,90 @@ function toDealtPrompt(row: DealtRow): DealtPrompt {
 function toLeaderboardEntry(row: LeaderboardRow): LeaderboardEntry {
   const truths = Number(row.truths_answered);
   const dares = Number(row.dares_answered);
+  const wyr = Number(row.wyr_answered ?? 0);
   return {
     guildId: row.guild_id,
     userId: row.user_id,
     truthsAnswered: truths,
     daresAnswered: dares,
-    totalAnswered: row.total_answered !== undefined ? Number(row.total_answered) : truths + dares,
+    wyrAnswered: wyr,
+    totalAnswered:
+      row.total_answered !== undefined ? Number(row.total_answered) : truths + dares + wyr,
     updatedAt: Number(row.updated_at),
   };
 }
 
-export async function getRecentPromptIds(db: D1Database, channelId: string, limit = 30) {
-  const { results } = await db
-    .prepare('SELECT prompt_id FROM recent_prompts WHERE channel_id = ? ORDER BY id DESC LIMIT ?')
-    .bind(channelId, limit)
-    .all<{ prompt_id: string }>();
-  return results.map((r) => r.prompt_id);
+export async function pickPromptFromDb(
+  db: D1Database,
+  guildId: string,
+  channelId: string,
+  type: PromptType,
+  recentLimit = 30
+): Promise<PromptRecord | null> {
+  const fresh = await db
+    .prepare(
+      `SELECT id, guild_id, type, rating, text
+       FROM prompts
+       WHERE type = ?
+         AND (guild_id IS NULL OR guild_id = ?)
+         AND CAST(id AS TEXT) NOT IN (
+           SELECT prompt_id FROM recent_prompts WHERE channel_id = ? ORDER BY id DESC LIMIT ?
+         )
+       ORDER BY RANDOM()
+       LIMIT 1`
+    )
+    .bind(type, guildId, channelId, recentLimit)
+    .first<PromptRow>();
+
+  if (fresh) return toPromptRecord(fresh);
+
+  const fallback = await db
+    .prepare(
+      `SELECT id, guild_id, type, rating, text
+       FROM prompts
+       WHERE type = ? AND (guild_id IS NULL OR guild_id = ?)
+       ORDER BY RANDOM()
+       LIMIT 1`
+    )
+    .bind(type, guildId)
+    .first<PromptRow>();
+
+  return fallback ? toPromptRecord(fallback) : null;
+}
+
+export async function addPromptToDb(
+  db: D1Database,
+  guildId: string,
+  type: PromptType,
+  text: string,
+  createdBy: string
+): Promise<{ prompt: PromptRecord; duplicate: boolean }> {
+  const existing = await db
+    .prepare(
+      `SELECT id, guild_id, type, rating, text
+       FROM prompts
+       WHERE type = ?
+         AND (guild_id IS NULL OR guild_id = ?)
+         AND LOWER(TRIM(text)) = LOWER(?)
+       LIMIT 1`
+    )
+    .bind(type, guildId, text)
+    .first<PromptRow>();
+
+  if (existing) {
+    return { prompt: toPromptRecord(existing), duplicate: true };
+  }
+
+  const inserted = await db
+    .prepare(
+      `INSERT INTO prompts (guild_id, type, rating, text, created_by, created_at)
+       VALUES (?, ?, 'pg13', ?, ?, ?)
+       RETURNING id, guild_id, type, rating, text`
+    )
+    .bind(guildId, type, text, createdBy, Date.now())
+    .first<PromptRow>();
+
+  return { prompt: toPromptRecord(inserted!), duplicate: false };
 }
 
 export async function saveShownPrompt(
@@ -159,15 +255,23 @@ export async function incrementScore(
 ) {
   const row = await db
     .prepare(
-      `INSERT INTO leaderboard (guild_id, user_id, truths_answered, dares_answered, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO leaderboard (guild_id, user_id, truths_answered, dares_answered, wyr_answered, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(guild_id, user_id) DO UPDATE SET
          truths_answered = truths_answered + excluded.truths_answered,
          dares_answered = dares_answered + excluded.dares_answered,
+         wyr_answered = wyr_answered + excluded.wyr_answered,
          updated_at = excluded.updated_at
        RETURNING *`
     )
-    .bind(guildId, userId, type === 'truth' ? 1 : 0, type === 'dare' ? 1 : 0, Date.now())
+    .bind(
+      guildId,
+      userId,
+      type === 'truth' ? 1 : 0,
+      type === 'dare' ? 1 : 0,
+      type === 'wyr' ? 1 : 0,
+      Date.now()
+    )
     .first<LeaderboardRow>();
   return toLeaderboardEntry(row!);
 }
@@ -175,10 +279,10 @@ export async function incrementScore(
 export async function getLeaderboard(db: D1Database, guildId: string, limit = 15) {
   const { results } = await db
     .prepare(
-      `SELECT guild_id, user_id, truths_answered, dares_answered, updated_at,
-              (truths_answered + dares_answered) AS total_answered
+      `SELECT guild_id, user_id, truths_answered, dares_answered, wyr_answered, updated_at,
+              (truths_answered + dares_answered + wyr_answered) AS total_answered
        FROM leaderboard
-       WHERE guild_id = ? AND (truths_answered + dares_answered) > 0
+       WHERE guild_id = ? AND (truths_answered + dares_answered + wyr_answered) > 0
        ORDER BY total_answered DESC, truths_answered DESC, updated_at ASC
        LIMIT ?`
     )
@@ -203,9 +307,9 @@ export async function getUserRank(db: D1Database, guildId: string, userId: strin
        FROM leaderboard
        WHERE guild_id = ?
          AND (
-           (truths_answered + dares_answered) > ?
+           (truths_answered + dares_answered + wyr_answered) > ?
            OR (
-             (truths_answered + dares_answered) = ?
+             (truths_answered + dares_answered + wyr_answered) = ?
              AND (truths_answered > ? OR (truths_answered = ? AND updated_at < ?))
            )
          )`

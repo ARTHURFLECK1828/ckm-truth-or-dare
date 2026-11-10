@@ -1,3 +1,16 @@
+CREATE TABLE IF NOT EXISTS prompts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT,
+  type TEXT NOT NULL,
+  rating TEXT NOT NULL DEFAULT 'pg13',
+  text TEXT NOT NULL,
+  created_by TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompts_lookup
+  ON prompts (type, guild_id);
+
 CREATE TABLE IF NOT EXISTS dealt_prompts (
   id TEXT PRIMARY KEY,
   guild_id TEXT NOT NULL,
@@ -18,12 +31,13 @@ CREATE TABLE IF NOT EXISTS leaderboard (
   user_id TEXT NOT NULL,
   truths_answered INTEGER NOT NULL DEFAULT 0,
   dares_answered INTEGER NOT NULL DEFAULT 0,
+  wyr_answered INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (guild_id, user_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_leaderboard_rank
-  ON leaderboard (guild_id, (truths_answered + dares_answered) DESC);
+  ON leaderboard (guild_id, (truths_answered + dares_answered + wyr_answered) DESC);
 
 CREATE TABLE IF NOT EXISTS recent_prompts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

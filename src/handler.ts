@@ -5,19 +5,19 @@ import {
   InteractionType,
 } from 'discord-interactions';
 import {
+  addPromptToDb,
   getDealtPrompt,
   getLeaderboard,
-  getRecentPromptIds,
   getUserRank,
   incrementScore,
   markPromptAnswered,
+  pickPromptFromDb,
   saveDealtPrompt,
   saveShownPrompt,
   type DealtPrompt,
   type PromptType,
 } from './db.js';
 import { leaderboardPayload, promptPayload, type AuthorInfo } from './embeds.js';
-import { PROMPTS } from './prompts.js';
 
 export interface DiscordUser {
   id: string;
@@ -25,6 +25,12 @@ export interface DiscordUser {
   global_name?: string | null;
   avatar?: string | null;
   discriminator?: string;
+}
+
+export interface CommandOption {
+  name: string;
+  type: number;
+  value: string | number | boolean;
 }
 
 export interface InteractionPayload {
@@ -39,6 +45,7 @@ export interface InteractionPayload {
   data?: {
     name?: string;
     custom_id?: string;
+    options?: CommandOption[];
   };
 }
 
@@ -69,6 +76,10 @@ function getAuthor(interaction: InteractionPayload): AuthorInfo {
   };
 }
 
+function getOption(options: CommandOption[] | undefined, name: string) {
+  return options?.find((o) => o.name === name)?.value;
+}
+
 function ephemeral(content: string) {
   return {
     type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
@@ -84,18 +95,14 @@ async function pickAndDeal(
   guildId: string,
   channelId: string,
   userId: string,
-  choice: 'truth' | 'dare' | 'random',
+  choice: 'truth' | 'dare' | 'random' | 'wyr',
   rng = Math.random
-): Promise<DealtPrompt> {
+): Promise<DealtPrompt | null> {
   const type: PromptType = choice === 'random' ? (rng() < 0.5 ? 'truth' : 'dare') : choice;
-  const pool = PROMPTS.filter((p) => p.type === type);
-  const recent = new Set(await getRecentPromptIds(db, channelId, 30));
+  const picked = await pickPromptFromDb(db, guildId, channelId, type, 30);
+  if (!picked) return null;
 
-  let candidates = pool.filter((p) => !recent.has(p.id));
-  if (candidates.length === 0) candidates = pool;
-
-  const picked = candidates[Math.min(candidates.length - 1, Math.floor(rng() * candidates.length))]!;
-  await saveShownPrompt(db, channelId, picked.id);
+  await saveShownPrompt(db, channelId, String(picked.id));
 
   const dealt: DealtPrompt = {
     id: crypto.randomUUID().replace(/-/g, '').slice(0, 12),
@@ -104,7 +111,7 @@ async function pickAndDeal(
     userId,
     type,
     rating: picked.rating,
-    promptId: picked.id,
+    promptId: String(picked.id),
     promptText: picked.text,
     answered: false,
     answeredByUserId: null,
@@ -140,12 +147,38 @@ export async function handleInteraction(
     if (interaction.type === InteractionType.APPLICATION_COMMAND) {
       const cmd = interaction.data?.name;
 
-      if (cmd === 'truth' || cmd === 'dare' || cmd === 'random') {
-        const dealt = await pickAndDeal(db, guildId, channelId, userId, cmd, rng);
+      if (cmd === 'truth' || cmd === 'dare' || cmd === 'random' || cmd === 'wouldyourather') {
+        const choice = cmd === 'wouldyourather' ? 'wyr' : cmd;
+        const dealt = await pickAndDeal(db, guildId, channelId, userId, choice, rng);
+        if (!dealt) {
+          return ephemeral('No prompts found in the database yet. Add one with `/addprompt`.');
+        }
         return {
           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
           data: promptPayload(dealt, author),
         };
+      }
+
+      if (cmd === 'addprompt') {
+        const type = getOption(interaction.data?.options, 'type');
+        const rawText = getOption(interaction.data?.options, 'text');
+
+        if ((type !== 'truth' && type !== 'dare' && type !== 'wyr') || typeof rawText !== 'string') {
+          return ephemeral('Provide a valid type and text.');
+        }
+
+        const text = rawText.trim();
+        if (text.length < 5 || text.length > 500) {
+          return ephemeral('Prompt text must be between 5 and 500 characters.');
+        }
+
+        const { prompt, duplicate } = await addPromptToDb(db, guildId, type, text, userId);
+        const label =
+          prompt.type === 'truth' ? 'Truth' : prompt.type === 'dare' ? 'Dare' : 'Would You Rather';
+        if (duplicate) {
+          return ephemeral(`That ${label} already exists (#${prompt.id}): ${prompt.text}`);
+        }
+        return ephemeral(`Added ${label} #${prompt.id}: ${prompt.text}`);
       }
 
       if (cmd === 'leaderboard') {
@@ -186,6 +219,9 @@ export async function handleInteraction(
 
       if (action === 'deal' && (value === 'truth' || value === 'dare' || value === 'random')) {
         const dealt = await pickAndDeal(db, guildId, channelId, userId, value, rng);
+        if (!dealt) {
+          return ephemeral('No prompts found in the database yet.');
+        }
         return {
           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
           data: promptPayload(dealt, author),

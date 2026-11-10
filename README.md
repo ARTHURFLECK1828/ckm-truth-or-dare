@@ -1,8 +1,7 @@
 # truth or dare discord bot
 
 Simple Truth or Dare bot running on Cloudflare Workers + D1.
-Commands: `/truth`, `/dare`, `/random`, `/leaderboard`.
-Prompts are in `src/prompts.ts`.
+Commands: `/truth`, `/dare`, `/random`, `/wouldyourather`, `/addprompt`, `/leaderboard`.
 
 ## Setup
 
@@ -16,6 +15,7 @@ Put the D1 `database_id` in `wrangler.toml`, then:
 
 ```bash
 npm run db:init:remote
+npm run db:seed:remote
 npx wrangler secret put DISCORD_PUBLIC_KEY
 npm run deploy:worker
 ```

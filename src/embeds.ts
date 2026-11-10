@@ -7,8 +7,11 @@ export interface AuthorInfo {
 }
 
 export function promptPayload(prompt: DealtPrompt, author: AuthorInfo, totalAnswered?: number) {
+  const color =
+    prompt.type === 'truth' ? 0x22c55e : prompt.type === 'dare' ? 0xef4444 : 0x8b5cf6;
+
   const embed: Record<string, unknown> = {
-    color: prompt.type === 'truth' ? 0x22c55e : 0xef4444,
+    color,
     author: {
       name: `Requested by ${author.name}`,
       ...(author.iconUrl ? { icon_url: author.iconUrl } : {}),
@@ -65,13 +68,14 @@ export function leaderboardPayload(
 ) {
   const description =
     entries.length === 0
-      ? 'No questions answered in this server yet. Use `/truth` or `/dare` and click **Answered**.'
+      ? 'No questions answered in this server yet. Use `/truth`, `/dare`, or `/wouldyourather` and click **Answered**.'
       : entries
           .map((e, i) => {
             const q = e.totalAnswered === 1 ? 'question' : 'questions';
             const t = e.truthsAnswered === 1 ? 'Truth' : 'Truths';
             const d = e.daresAnswered === 1 ? 'Dare' : 'Dares';
-            return `**#${i + 1}** <@${e.userId}> — **${e.totalAnswered}** ${q} (${e.truthsAnswered} ${t}, ${e.daresAnswered} ${d})`;
+            const wyr = e.wyrAnswered > 0 ? `, ${e.wyrAnswered} WYR` : '';
+            return `**#${i + 1}** <@${e.userId}> — **${e.totalAnswered}** ${q} (${e.truthsAnswered} ${t}, ${e.daresAnswered} ${d}${wyr})`;
           })
           .join('\n');
 

@@ -10,6 +10,8 @@
     "deploy:commands": "tsx src/deploy-commands.ts",
     "db:init:local": "wrangler d1 execute truth-or-dare-db --local --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute truth-or-dare-db --remote --file=./schema.sql",
+    "db:seed:local": "wrangler d1 execute truth-or-dare-db --local --file=./seed.sql",
+    "db:seed:remote": "wrangler d1 execute truth-or-dare-db --remote --file=./seed.sql",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts"
   },
